@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCreatePacket(t *testing.T) {
@@ -70,6 +71,21 @@ func TestParseStatusResponse(t *testing.T) {
 		DesiredTempertaure: 27,
 		RoomTemperature:    24,
 	}, status)
+}
+
+func TestUnmarshalCommandPacket(t *testing.T) {
+	r := require.New(t)
+
+	cmd, err := UnmarshalCommandPacket(mustDecode("478006000100001B1800000000BA46"))
+	r.NoError(err)
+	r.EqualValues(&Command{
+		StartByte: startByte,
+		CommandID: ResponseStatus,
+		DataSize:  6,
+		Data:      [10]byte{0x00, 0x01, 0x00, 0x00, 0x1b, 0x18, 0x00, 0x00, 0x00, 0x00},
+		CRC:       uint8(186),
+		EndByte:   endByte,
+	}, cmd)
 }
 
 func mustDecode(s string) []byte {

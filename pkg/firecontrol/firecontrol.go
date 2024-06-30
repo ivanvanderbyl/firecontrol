@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"time"
 )
 
@@ -38,8 +39,8 @@ type Status struct {
 var ErrInvalidTemperature = errors.New("invalid temperature")
 var ErrInvalidResponse = errors.New("invalid response packet")
 
-type CommandCode int
-type ResponseCode int
+type CommandCode uint8
+type ResponseCode uint8
 
 const (
 	// Remote commands for the fireplace
@@ -88,13 +89,33 @@ func (f *Fireplace) SetTemperature(newTemp int) error {
 	return nil
 }
 
-func SearchForFireplaces(conn *net.UDPConn) ([]*Fireplace, error) {
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	conn.SetReadBuffer(1024) // Increased buffer size
+func SearchForFireplaces() ([]*Fireplace, error) {
+	conn, err := net.DialUDP("udp4",
+		nil,
+		&net.UDPAddr{Port: fireplacePort, IP: net.ParseIP("255.255.255.255")},
+	)
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	// listenAddr, err := net.ResolveUDPAddr("udp4", ":3300")
+	listenAddr := net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), fireplacePort))
+
+	// Create a UDP connection to listen for incoming packets
+	listener, err := net.ListenUDP("udp4", listenAddr)
+	if err != nil {
+		fmt.Println("Error listening on UDP:", err)
+		return nil, err
+	}
+	defer listener.Close()
+
+	listener.SetDeadline(time.Now().Add(3 * time.Second))
+	listener.SetReadBuffer(1024)
 
 	// Send search command
 	searchPacket := marshalCommandPacket(CommandSearchForFireplaces, []byte{})
-	_, err := conn.Write(searchPacket)
+	_, err = conn.Write(searchPacket)
 	if err != nil {
 		return nil, err
 	}
@@ -102,8 +123,8 @@ func SearchForFireplaces(conn *net.UDPConn) ([]*Fireplace, error) {
 	// Wait for responses
 	fireplaces := make([]*Fireplace, 0)
 	for {
-		buffer := make([]byte, 1024) // Increased buffer size
-		n, _, err := conn.ReadFromUDP(buffer)
+		buffer := make([]byte, 1024)
+		n, _, err := listener.ReadFromUDP(buffer)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				break
@@ -112,9 +133,12 @@ func SearchForFireplaces(conn *net.UDPConn) ([]*Fireplace, error) {
 			return nil, err
 		}
 
-		fmt.Printf("%x\n", buffer[:n])
+		cmd, err := UnmarshalCommandPacket(buffer[:n])
+		if err != nil {
+			return nil, err
+		}
 
-		if n != packetSize {
+		if cmd.CommandID != ResponseIAmAFire {
 			continue
 		}
 
@@ -131,10 +155,10 @@ func SearchForFireplaces(conn *net.UDPConn) ([]*Fireplace, error) {
 
 type Command struct {
 	StartByte byte
-	CommandID byte
-	DataSize  byte
+	CommandID ResponseCode
+	DataSize  uint8
 	Data      [10]byte
-	CRC       byte
+	CRC       uint8
 	EndByte   byte
 }
 
@@ -146,19 +170,19 @@ func calculateCRC(data []byte) byte {
 	return sum
 }
 
-func createSearchCommand(command CommandCode, data [10]byte) []byte {
-	cmd := Command{
-		StartByte: startByte,
-		CommandID: byte(command),
-		DataSize:  byte(len(data)),
-		Data:      data,
-		EndByte:   endByte,
-	}
-	cmd.CRC = calculateCRC([]byte{cmd.CommandID, cmd.DataSize})
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, cmd)
-	return buf.Bytes()
-}
+// func createSearchCommand(command CommandCode, data [10]byte) []byte {
+// 	cmd := Command{
+// 		StartByte: startByte,
+// 		CommandID: command,
+// 		DataSize:  byte(len(data)),
+// 		Data:      data,
+// 		EndByte:   endByte,
+// 	}
+// 	cmd.CRC = calculateCRC([]byte{cmd.CommandID, cmd.DataSize})
+// 	buf := new(bytes.Buffer)
+// 	binary.Write(buf, binary.BigEndian, cmd)
+// 	return buf.Bytes()
+// }
 
 func marshalCommandPacket(command CommandCode, data []byte) []byte {
 	packet := make([]byte, packetSize)
@@ -174,6 +198,19 @@ func marshalCommandPacket(command CommandCode, data []byte) []byte {
 	packet[14] = endByte
 
 	return packet
+}
+
+func UnmarshalCommandPacket(packet []byte) (*Command, error) {
+	if !isValidResponse(packet) {
+		return nil, ErrInvalidResponse
+	}
+
+	cmd := new(Command)
+	err := binary.Read(bytes.NewReader(packet), binary.BigEndian, cmd)
+	if err != nil {
+		return nil, err
+	}
+	return cmd, nil
 }
 
 func isValidResponse(packet []byte) bool {
