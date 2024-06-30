@@ -88,6 +88,21 @@ func TestUnmarshalCommandPacket(t *testing.T) {
 	}, cmd)
 }
 
+func TestUnmarshalCommandPacket_Unknown(t *testing.T) {
+	r := require.New(t)
+
+	cmd, err := UnmarshalCommandPacket(mustDecode("478d00000000000000000000008d46"))
+	r.NoError(err)
+	r.EqualValues(&Command{
+		StartByte: startByte,
+		CommandID: ResponseStatus,
+		DataSize:  0,
+		Data:      [10]byte{},
+		CRC:       uint8(186),
+		EndByte:   endByte,
+	}, cmd)
+}
+
 func mustDecode(s string) []byte {
 	b, err := hex.DecodeString(s)
 	if err != nil {

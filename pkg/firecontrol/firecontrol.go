@@ -28,6 +28,10 @@ type Fireplace struct {
 	Addr   *net.UDPAddr
 }
 
+type FireplaceData interface {
+	isFireplaceData()
+}
+
 type Status struct {
 	HasTimers          bool
 	IsOn               bool
@@ -88,40 +92,10 @@ const (
 	maxDataSize = 10
 )
 
-func (f *Fireplace) PowerOn() error {
-	return nil
-}
-
-func (f *Fireplace) PowerOff() error {
-	return nil
-}
-
-// Refresh the status of the fireplace
-func (f *Fireplace) Refresh() error {
-	data, err := f.rpc(CommandStatusPlease, nil)
-	if err != nil {
-		return err
+func NewFireplace(addr net.IP) *Fireplace {
+	return &Fireplace{
+		Addr: &net.UDPAddr{IP: addr, Port: fireplacePort},
 	}
-
-	status, ok := data.(*Status)
-	if !ok {
-		return fmt.Errorf("unexpected data type: %T", data)
-	}
-
-	f.Status = status
-	return nil
-}
-
-func (f *Fireplace) SetTemperature(newTemp int) error {
-	if newTemp < minTemperature || newTemp > maxTemperature {
-		return ErrInvalidTemperature
-	}
-
-	return nil
-}
-
-type FireplaceData interface {
-	isFireplaceData()
 }
 
 func SearchForFireplaces() ([]*Fireplace, error) {
@@ -283,10 +257,12 @@ func handleResponse(command *Command) (FireplaceData, error) {
 		}
 
 		return status, nil
-	case CommandPowerOn:
-
-	case CommandPowerOff:
-
+	case ResponsePowerOnAck:
+		return &PowerOnAck{}, nil
+	case ResponsePowerOffAck:
+		return &PowerOffAck{}, nil
+	case ResponseTemperatureAck:
+		return &SetTempAck{}, nil
 	}
 
 	return nil, fmt.Errorf("unknown command ID: %d", command.CommandID)
