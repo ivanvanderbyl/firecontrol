@@ -98,37 +98,7 @@ func (f *Fireplace) PowerOff() error {
 
 // Refresh the status of the fireplace
 func (f *Fireplace) Refresh() error {
-	if f.Addr == nil {
-		return errors.New("fireplace address is nil")
-	}
-
-	conn, err := net.DialUDP("udp4", &net.UDPAddr{Port: fireplacePort}, f.Addr)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	statusPacket := marshalCommandPacket(CommandStatusPlease, []byte{})
-	n, err := conn.Write(statusPacket)
-	if err != nil {
-		return err
-	}
-
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	conn.SetReadBuffer(1024)
-
-	buffer := make([]byte, 1024)
-	_, _, err = conn.ReadFromUDP(buffer)
-	if err != nil {
-		return err
-	}
-
-	cmd, err := UnmarshalCommandPacket(buffer[:n])
-	if err != nil {
-		return err
-	}
-
-	data, err := handleResponse(cmd)
+	data, err := f.rpc(CommandStatusPlease, nil)
 	if err != nil {
 		return err
 	}
@@ -313,6 +283,10 @@ func handleResponse(command *Command) (FireplaceData, error) {
 		}
 
 		return status, nil
+	case CommandPowerOn:
+
+	case CommandPowerOff:
+
 	}
 
 	return nil, fmt.Errorf("unknown command ID: %d", command.CommandID)
