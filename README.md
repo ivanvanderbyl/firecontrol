@@ -7,8 +7,10 @@ It was largely implemented by reverse engineering the wire-protocol used by the 
 
 > [!CAUTION]
 > This is not an official project endorsed by Escea. It is a reverse-engineered implementation of the wire protocol used by the Escea iOS app to communicate with the fireplace over the local network.
-> It is controlling a fireplace, so use it at your own risk.
-> Absolutely no warranty is provided.
+>
+> It is controlling a fireplace, so use it at your own risk. If it burns your house down, it's not my fault.
+>
+> **Absolutely no warranty is provided.**
 
 ## Usage
 
