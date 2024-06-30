@@ -12,6 +12,14 @@ import (
 )
 
 func main() {
+	commonFlags := []cli.Flag{
+		&cli.StringFlag{
+			Name:     "ip",
+			Usage:    "IP address of the fireplace",
+			Required: true,
+		},
+	}
+
 	app := &cli.App{
 		Name:  "firecontrol",
 		Usage: "Remote control for Escea fireplaces",
@@ -35,13 +43,7 @@ func main() {
 			{
 				Name:  "status",
 				Usage: "Get the status of a fireplace",
-				Flags: []cli.Flag{
-					&cli.StringFlag{
-						Name:     "ip",
-						Usage:    "IP address of the fireplace",
-						Required: true,
-					},
-				},
+				Flags: commonFlags,
 				Action: func(c *cli.Context) error {
 					addr := net.ParseIP(c.String("ip"))
 
@@ -52,20 +54,20 @@ func main() {
 						return err
 					}
 
-					slog.Info("Fireplace Status", "IP", c.String("ip"), "Status", fp.Status)
+					fmt.Printf("Fireplace: %s\n\tFire Status: %s\n\tFlame Effect: %s\n\tFan Boost: %s\n\tDesired Temperature: %dºC\n\tRoom Temperature: %dºC\n",
+						fp.Addr.IP.String(),
+						formatBoolean(fp.Status.IsOn),
+						formatBoolean(fp.Status.FlameEffectIsOn),
+						formatBoolean(fp.Status.FanBoostIsOn),
+						fp.Status.DesiredTempertaure, fp.Status.RoomTemperature,
+					)
 					return nil
 				},
 			},
 			{
 				Name:  "power-on",
 				Usage: "Power on the fireplace",
-				Flags: []cli.Flag{
-					&cli.StringFlag{
-						Name:     "ip",
-						Usage:    "IP address of the fireplace",
-						Required: true,
-					},
-				},
+				Flags: commonFlags,
 				Action: func(c *cli.Context) error {
 					fmt.Println("Powering on the fireplace...")
 
@@ -85,13 +87,14 @@ func main() {
 			{
 				Name:  "power-off",
 				Usage: "Power off the fireplace",
+				Flags: commonFlags,
 				Action: func(c *cli.Context) error {
 					fmt.Println("Powering off the fireplace...")
 
 					addr := net.ParseIP(c.String("ip"))
 
 					fp := firecontrol.NewFireplace(addr)
-					err := fp.PowerOn()
+					err := fp.PowerOff()
 					if err != nil {
 						slog.Error("Failed to power off fireplace", "error", err)
 						return err
@@ -138,4 +141,11 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func formatBoolean(b bool) string {
+	if b {
+		return "On"
+	}
+	return "Off"
 }
