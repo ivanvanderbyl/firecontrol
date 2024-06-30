@@ -25,6 +25,7 @@ type Fireplace struct {
 	Serial uint32
 	PIN    uint16
 	Status *Status
+	Addr   *net.UDPAddr
 }
 
 type Status struct {
@@ -36,11 +37,18 @@ type Status struct {
 	RoomTemperature    uint8
 }
 
+type foundFireplacePayload struct {
+	Serial uint32
+	PIN    uint16
+}
+
+func (s *Status) isFireplaceData()                {}
+func (f *foundFireplacePayload) isFireplaceData() {}
+
 var ErrInvalidTemperature = errors.New("invalid temperature")
 var ErrInvalidResponse = errors.New("invalid response packet")
 
 type CommandCode uint8
-type ResponseCode uint8
 
 const (
 	// Remote commands for the fireplace
@@ -55,15 +63,15 @@ const (
 	CommandSetTemperature      CommandCode = 0x57
 
 	// Responses from the fireplace
-	ResponseStatus            ResponseCode = 0x80 // Response to status request
-	ResponsePowerOnAck        ResponseCode = 0x8D // Acknowledgement of power on
-	ResponsePowerOffAck       ResponseCode = 0x8F // Acknowledgement of power off
-	ResponseFanBoostOnAck     ResponseCode = 0x89 // Acknowledgement of fan boost on
-	ResponseFanBoostOffAck    ResponseCode = 0x8B // Acknowledgement of fan boost off
-	ResponseFlameEffectOnAck  ResponseCode = 0x61 // Acknowledgement of flame effect on
-	ResponseFlameEffectOffAck ResponseCode = 0x60 // Acknowledgement of flame effect off
-	ResponseTemperatureAck    ResponseCode = 0x66 // Acknowledgement of temperature change
-	ResponseIAmAFire          ResponseCode = 0x90 // Response to search command
+	ResponseStatus            CommandCode = 0x80 // Response to status request
+	ResponsePowerOnAck        CommandCode = 0x8D // Acknowledgement of power on
+	ResponsePowerOffAck       CommandCode = 0x8F // Acknowledgement of power off
+	ResponseFanBoostOnAck     CommandCode = 0x89 // Acknowledgement of fan boost on
+	ResponseFanBoostOffAck    CommandCode = 0x8B // Acknowledgement of fan boost off
+	ResponseFlameEffectOnAck  CommandCode = 0x61 // Acknowledgement of flame effect on
+	ResponseFlameEffectOffAck CommandCode = 0x60 // Acknowledgement of flame effect off
+	ResponseTemperatureAck    CommandCode = 0x66 // Acknowledgement of temperature change
+	ResponseIAmAFire          CommandCode = 0x90 // Response to search command
 
 	packetSize = 15
 	startByte  = 0x47
@@ -75,9 +83,16 @@ const (
 
 	// Fireplace broadcast port
 	fireplacePort = 3300
+
+	// Maximum data size for a command packet
+	maxDataSize = 10
 )
 
 func (f *Fireplace) PowerOn() error {
+	return nil
+}
+
+func (f *Fireplace) PowerOff() error {
 	return nil
 }
 
@@ -89,17 +104,20 @@ func (f *Fireplace) SetTemperature(newTemp int) error {
 	return nil
 }
 
+type FireplaceData interface {
+	isFireplaceData()
+}
+
 func SearchForFireplaces() ([]*Fireplace, error) {
 	conn, err := net.DialUDP("udp4",
 		nil,
-		&net.UDPAddr{Port: fireplacePort, IP: net.ParseIP("255.255.255.255")},
+		&net.UDPAddr{Port: fireplacePort, IP: net.IPv4bcast},
 	)
 	if err != nil {
 		panic(err)
 	}
 	defer conn.Close()
 
-	// listenAddr, err := net.ResolveUDPAddr("udp4", ":3300")
 	listenAddr := net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), fireplacePort))
 
 	// Create a UDP connection to listen for incoming packets
@@ -124,7 +142,7 @@ func SearchForFireplaces() ([]*Fireplace, error) {
 	fireplaces := make([]*Fireplace, 0)
 	for {
 		buffer := make([]byte, 1024)
-		n, _, err := listener.ReadFromUDP(buffer)
+		n, remoteAddr, err := listener.ReadFromUDP(buffer)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				break
@@ -142,12 +160,21 @@ func SearchForFireplaces() ([]*Fireplace, error) {
 			continue
 		}
 
-		fp, err := parseFireplaceResponse(buffer[:n])
+		data, err := handleResponse(cmd)
 		if err != nil {
 			return nil, err
 		}
 
-		fireplaces = append(fireplaces, &fp)
+		fp, ok := data.(*foundFireplacePayload)
+		if !ok {
+			return nil, fmt.Errorf("unexpected data type: %T", data)
+		}
+
+		fireplaces = append(fireplaces, &Fireplace{
+			Serial: fp.Serial,
+			PIN:    fp.PIN,
+			Addr:   remoteAddr,
+		})
 	}
 
 	return fireplaces, nil
@@ -155,7 +182,7 @@ func SearchForFireplaces() ([]*Fireplace, error) {
 
 type Command struct {
 	StartByte byte
-	CommandID ResponseCode
+	CommandID CommandCode
 	DataSize  uint8
 	Data      [10]byte
 	CRC       uint8
@@ -170,34 +197,32 @@ func calculateCRC(data []byte) byte {
 	return sum
 }
 
-// func createSearchCommand(command CommandCode, data [10]byte) []byte {
-// 	cmd := Command{
-// 		StartByte: startByte,
-// 		CommandID: command,
-// 		DataSize:  byte(len(data)),
-// 		Data:      data,
-// 		EndByte:   endByte,
-// 	}
-// 	cmd.CRC = calculateCRC([]byte{cmd.CommandID, cmd.DataSize})
-// 	buf := new(bytes.Buffer)
-// 	binary.Write(buf, binary.BigEndian, cmd)
-// 	return buf.Bytes()
-// }
+func marshalCommand(command CommandCode, data []byte) []byte {
+	if len(data) > maxDataSize {
+		panic("data size too large")
+	}
+
+	cmd := Command{
+		StartByte: startByte,
+		CommandID: CommandCode(command),
+		DataSize:  byte(len(data)),
+		EndByte:   endByte,
+	}
+
+	copy(cmd.Data[:], data)
+
+	if cmd.DataSize > maxDataSize {
+		panic("data size too large")
+	}
+
+	cmd.CRC = calculateCRC([]byte{byte(cmd.CommandID), cmd.DataSize})
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, cmd)
+	return buf.Bytes()
+}
 
 func marshalCommandPacket(command CommandCode, data []byte) []byte {
-	packet := make([]byte, packetSize)
-	packet[0] = startByte
-	packet[1] = byte(command)
-	packet[2] = byte(len(data)) // DataSize
-
-	// Copy data into packet
-	copy(packet[3:], data)
-
-	// Close packet
-	packet[13] = calculateCRC(packet[1:14])
-	packet[14] = endByte
-
-	return packet
+	return marshalCommand(command, []byte(data))
 }
 
 func UnmarshalCommandPacket(packet []byte) (*Command, error) {
@@ -225,10 +250,18 @@ func isValidCRC(packet []byte) bool {
 	return crc == packet[13]
 }
 
-type foundFireplacePayload struct {
-	DataLength uint8
-	Serial     uint32
-	PIN        uint16
+func handleResponse(command *Command) (FireplaceData, error) {
+	switch command.CommandID {
+	case ResponseIAmAFire:
+		payload := foundFireplacePayload{}
+		err := binary.Read(bytes.NewReader(command.Data[:]), binary.BigEndian, &payload)
+		if err != nil {
+			return nil, err
+		}
+		return &payload, nil
+	}
+
+	return nil, fmt.Errorf("unknown command ID: %d", command.CommandID)
 }
 
 func parseFireplaceResponse(packet []byte) (Fireplace, error) {

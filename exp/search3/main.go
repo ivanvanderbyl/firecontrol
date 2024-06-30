@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"log/slog"
 
 	"github.com/ivanvanderbyl/escea-fireplace/pkg/firecontrol"
 )
@@ -13,6 +13,6 @@ func main() {
 	}
 
 	for _, f := range fs {
-		fmt.Println("Found Fireplace", f.PIN, f.Serial)
+		slog.Info("Found Fireplace", "IP", f.Addr, "Serial", f.Serial, "PIN", f.PIN)
 	}
 }
