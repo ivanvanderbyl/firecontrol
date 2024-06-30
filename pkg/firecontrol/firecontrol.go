@@ -96,6 +96,52 @@ func (f *Fireplace) PowerOff() error {
 	return nil
 }
 
+// Refresh the status of the fireplace
+func (f *Fireplace) Refresh() error {
+	if f.Addr == nil {
+		return errors.New("fireplace address is nil")
+	}
+
+	conn, err := net.DialUDP("udp4", &net.UDPAddr{Port: fireplacePort}, f.Addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	statusPacket := marshalCommandPacket(CommandStatusPlease, []byte{})
+	n, err := conn.Write(statusPacket)
+	if err != nil {
+		return err
+	}
+
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	conn.SetReadBuffer(1024)
+
+	buffer := make([]byte, 1024)
+	_, _, err = conn.ReadFromUDP(buffer)
+	if err != nil {
+		return err
+	}
+
+	cmd, err := UnmarshalCommandPacket(buffer[:n])
+	if err != nil {
+		return err
+	}
+
+	data, err := handleResponse(cmd)
+	if err != nil {
+		return err
+	}
+
+	status, ok := data.(*Status)
+	if !ok {
+		return fmt.Errorf("unexpected data type: %T", data)
+	}
+
+	f.Status = status
+	return nil
+}
+
 func (f *Fireplace) SetTemperature(newTemp int) error {
 	if newTemp < minTemperature || newTemp > maxTemperature {
 		return ErrInvalidTemperature
@@ -259,6 +305,14 @@ func handleResponse(command *Command) (FireplaceData, error) {
 			return nil, err
 		}
 		return &payload, nil
+	case ResponseStatus:
+		status := new(Status)
+		err := binary.Read(bytes.NewReader(command.Data[:]), binary.BigEndian, status)
+		if err != nil {
+			return nil, err
+		}
+
+		return status, nil
 	}
 
 	return nil, fmt.Errorf("unknown command ID: %d", command.CommandID)
