@@ -78,6 +78,7 @@ func AccessoryAction(c *cli.Context) error {
 			fireplace: fireplace,
 		}
 
+		// Start the controller in a new goroutine
 		p.Go(controller.Start)
 	}
 
@@ -209,9 +210,9 @@ func (fc *FireplaceController) refreshStatus(_ context.Context) error {
 	acc := fc.accessory
 	th := acc.Thermostat
 	th.CurrentTemperature.SetValue(float64(fc.fireplace.Status.CurrentTemperature))
-	th.TargetTemperature.SetValue(float64(fc.fireplace.Status.TargetTempertaure))
 
 	if fc.fireplace.Status.IsOn {
+		th.TargetTemperature.SetValue(float64(fc.fireplace.Status.TargetTempertaure))
 		err = th.TargetHeatingCoolingState.SetValue(characteristic.TargetHeatingCoolingStateHeat)
 		if err != nil {
 			return errors.Wrap(err, "setting target heating cooling state")
