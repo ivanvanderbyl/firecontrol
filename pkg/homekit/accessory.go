@@ -46,6 +46,21 @@ func AccessoryAction(c *cli.Context) error {
 	pin := c.Int("pin")
 	serial := c.Int("serial")
 
+	// Setup a listener for interrupts and SIGTERM signals
+	// to stop the server.
+	sigChan := make(chan os.Signal)
+	signal.Notify(sigChan, os.Interrupt)
+	signal.Notify(sigChan, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		<-sigChan
+		slog.Info("Interrupt signal received")
+		// Stop delivering signals.
+		signal.Stop(sigChan)
+		// Cancel the context to stop the server.
+		cancel()
+	}()
+
 	p := pool.New().WithErrors().WithContext(ctx)
 
 	for _, fireplace := range fireplaces {
@@ -75,29 +90,17 @@ type Instruction struct {
 func (fc *FireplaceController) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Starting fireplace controller")
 
-	// Setup a listener for interrupts and SIGTERM signals
-	// to stop the server.
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt)
-	signal.Notify(c, syscall.SIGTERM)
-
-	// TODO: Move this to main
-	ctx, cancel := context.WithCancel(ctx)
-	go func() {
-		<-c
-		slog.Info("Interrupt signal received")
-		// Stop delivering signals.
-		signal.Stop(c)
-		// Cancel the context to stop the server.
-		cancel()
-	}()
-
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	err := fc.createAccessory(ctx)
 	if err != nil {
 		return errors.Wrap(err, "creating accessory")
+	}
+
+	err = fc.refreshStatus(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to refresh fireplace", "error", err)
 	}
 
 	go func() {
@@ -111,7 +114,11 @@ func (fc *FireplaceController) Start(ctx context.Context) error {
 					continue
 				}
 
-				slog.InfoContext(ctx, "Refreshed fireplace", "room-temperature", fc.fireplace.Status.CurrentTemperature)
+				slog.InfoContext(ctx, "Refreshed fireplace",
+					"room-temperature", fc.fireplace.Status.CurrentTemperature,
+					"target-temperature", fc.fireplace.Status.TargetTempertaure,
+					"status", fireplaceStatusString(fc.fireplace.Status),
+				)
 			case <-ctx.Done():
 				slog.InfoContext(ctx, "Stopping fireplace controller")
 				return
@@ -123,8 +130,6 @@ func (fc *FireplaceController) Start(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(err, "starting server")
 	}
-
-	// comandChan := make(chan firecontrol.CommandCode)
 
 	return nil
 }
@@ -142,9 +147,10 @@ func (fc *FireplaceController) createAccessory(ctx context.Context) error {
 	// target := characteristic.NewTargetTemperature()
 	acc.Thermostat.TargetTemperature.SetStepValue(1)
 	acc.Thermostat.TargetTemperature.SetMaxValue(30)
-	// target.SetMinValue(16)
-	// target.SetMaxValue(30)
-	// target.SetValue(22)
+
+	// TODO: For some reason enabling this causes the 'Home' app to stop responding to this accessory
+	// acc.Thermostat.TargetTemperature.SetMaxValue(16)
+	// acc.Thermostat.TargetTemperature.SetValue(22)
 
 	acc.Thermostat.TargetTemperature.OnSetRemoteValue(func(v float64) error {
 		slog.InfoContext(ctx, "Target Temperature Set", "value", v)
@@ -155,9 +161,6 @@ func (fc *FireplaceController) createAccessory(ctx context.Context) error {
 		}
 		return nil
 	})
-
-	// acc.Thermostat.TargetTemperature = target
-	// acc.Thermostat.AddC(target.C)
 
 	acc.Thermostat.TargetHeatingCoolingState.ValidVals = []int{characteristic.TargetHeatingCoolingStateHeat, characteristic.TargetHeatingCoolingStateOff}
 	acc.Thermostat.TargetHeatingCoolingState.OnSetRemoteValue(func(v int) error {
@@ -173,8 +176,7 @@ func (fc *FireplaceController) createAccessory(ctx context.Context) error {
 				return errors.Wrap(err, "turning on fireplace")
 			}
 
-			time.Sleep(10 * time.Second)
-			acc.Thermostat.TargetHeatingCoolingState.SetValue(characteristic.TargetHeatingCoolingStateHeat)
+			time.Sleep(1 * time.Second)
 		case characteristic.TargetHeatingCoolingStateOff:
 			slog.InfoContext(ctx, "TargetHeatingCoolingState: Off")
 
@@ -184,8 +186,7 @@ func (fc *FireplaceController) createAccessory(ctx context.Context) error {
 				return errors.Wrap(err, "turning off fireplace")
 			}
 
-			time.Sleep(10 * time.Second)
-			acc.Thermostat.TargetHeatingCoolingState.SetValue(characteristic.TargetHeatingCoolingStateOff)
+			time.Sleep(1 * time.Second)
 		}
 
 		return nil
@@ -195,8 +196,8 @@ func (fc *FireplaceController) createAccessory(ctx context.Context) error {
 	return nil
 }
 
-func (fc *FireplaceController) refreshStatus(ctx context.Context) error {
-	slog.InfoContext(ctx, "Refreshing fireplace status")
+func (fc *FireplaceController) refreshStatus(_ context.Context) error {
+	// slog.InfoContext(ctx, "Refreshing fireplace status")
 
 	err := fc.fireplace.Refresh()
 	if err != nil {
@@ -204,13 +205,28 @@ func (fc *FireplaceController) refreshStatus(ctx context.Context) error {
 	}
 
 	acc := fc.accessory
-	acc.Thermostat.CurrentTemperature.SetValue(float64(fc.fireplace.Status.CurrentTemperature))
-	acc.Thermostat.TargetTemperature.SetValue(float64(fc.fireplace.Status.TargetTempertaure))
+	th := acc.Thermostat
+	th.CurrentTemperature.SetValue(float64(fc.fireplace.Status.CurrentTemperature))
+	th.TargetTemperature.SetValue(float64(fc.fireplace.Status.TargetTempertaure))
 
 	if fc.fireplace.Status.IsOn {
-		acc.Thermostat.CurrentHeatingCoolingState.SetValue(characteristic.CurrentHeatingCoolingStateHeat)
+		err = th.TargetHeatingCoolingState.SetValue(characteristic.TargetHeatingCoolingStateHeat)
+		if err != nil {
+			return errors.Wrap(err, "setting target heating cooling state")
+		}
+		err = th.CurrentHeatingCoolingState.SetValue(characteristic.CurrentHeatingCoolingStateHeat)
+		if err != nil {
+			return errors.Wrap(err, "setting current heating cooling state")
+		}
 	} else {
-		acc.Thermostat.CurrentHeatingCoolingState.SetValue(characteristic.CurrentHeatingCoolingStateOff)
+		err = th.TargetHeatingCoolingState.SetValue(characteristic.TargetHeatingCoolingStateOff)
+		if err != nil {
+			return errors.Wrap(err, "setting target heating cooling state")
+		}
+		err = th.CurrentHeatingCoolingState.SetValue(characteristic.CurrentHeatingCoolingStateOff)
+		if err != nil {
+			return errors.Wrap(err, "setting current heating cooling state")
+		}
 	}
 
 	return nil
@@ -231,8 +247,8 @@ func (fc *FireplaceController) startServer(ctx context.Context) error {
 
 	fs := hap.NewFsStore("./db")
 
-	mylogger := syslog.New(os.Stdout, "SERV ", syslog.LstdFlags|syslog.Lshortfile)
-	log.Debug = &log.Logger{mylogger}
+	newLogger := syslog.New(os.Stdout, "SERV ", syslog.LstdFlags|syslog.Lshortfile)
+	log.Debug = &log.Logger{newLogger}
 
 	// Create the hap server.
 	server, err := hap.NewServer(fs, fc.accessory.A)
@@ -243,4 +259,11 @@ func (fc *FireplaceController) startServer(ctx context.Context) error {
 
 	// Run the server.
 	return server.ListenAndServe(ctx)
+}
+
+func fireplaceStatusString(status *firecontrol.Status) string {
+	if status.IsOn {
+		return "On"
+	}
+	return "Off"
 }
