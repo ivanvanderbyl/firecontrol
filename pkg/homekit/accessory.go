@@ -29,6 +29,8 @@ type (
 	}
 )
 
+const refreshInterval = 30 * time.Second
+
 func AccessoryAction(c *cli.Context) error {
 	ctx := c.Context
 
@@ -90,7 +92,7 @@ type Instruction struct {
 func (fc *FireplaceController) Start(ctx context.Context) error {
 	slog.InfoContext(ctx, "Starting fireplace controller")
 
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(refreshInterval)
 	defer ticker.Stop()
 
 	err := fc.createAccessory(ctx)
