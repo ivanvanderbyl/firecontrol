@@ -37,8 +37,8 @@ type Status struct {
 	IsOn               bool
 	FanBoostIsOn       bool
 	FlameEffectIsOn    bool
-	DesiredTempertaure uint8
-	RoomTemperature    uint8
+	TargetTempertaure  uint8
+	CurrentTemperature uint8
 }
 
 type foundFireplacePayload struct {
@@ -100,7 +100,7 @@ func NewFireplace(addr net.IP) *Fireplace {
 
 func SearchForFireplaces() ([]*Fireplace, error) {
 	conn, err := net.DialUDP("udp4",
-		nil,
+		&net.UDPAddr{IP: net.IPv4zero, Port: 0},
 		&net.UDPAddr{Port: fireplacePort, IP: net.IPv4bcast},
 	)
 	if err != nil {
@@ -119,7 +119,7 @@ func SearchForFireplaces() ([]*Fireplace, error) {
 	defer listener.Close()
 
 	listener.SetDeadline(time.Now().Add(3 * time.Second))
-	listener.SetReadBuffer(1024)
+	listener.SetReadBuffer(readBufferSize)
 
 	// Send search command
 	searchPacket := marshalCommandPacket(CommandSearchForFireplaces, []byte{})
@@ -131,7 +131,7 @@ func SearchForFireplaces() ([]*Fireplace, error) {
 	// Wait for responses
 	fireplaces := make([]*Fireplace, 0)
 	for {
-		buffer := make([]byte, 1024)
+		buffer := make([]byte, readBufferSize)
 		n, remoteAddr, err := listener.ReadFromUDP(buffer)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -240,29 +240,34 @@ func isValidCRC(packet []byte) bool {
 	return crc == packet[13]
 }
 
+// TODO: Refactor this to use nested structs on the Command struct instead of a switch statement here
 func handleResponse(command *Command) (FireplaceData, error) {
 	switch command.CommandID {
 	case ResponseIAmAFire:
-		payload := foundFireplacePayload{}
-		err := binary.Read(bytes.NewReader(command.Data[:]), binary.BigEndian, &payload)
+		payload := new(foundFireplacePayload)
+		err := binary.Read(bytes.NewReader(command.Data[:]), binary.BigEndian, payload)
 		if err != nil {
 			return nil, err
 		}
-		return &payload, nil
+		return payload, nil
+
 	case ResponseStatus:
 		status := new(Status)
 		err := binary.Read(bytes.NewReader(command.Data[:]), binary.BigEndian, status)
 		if err != nil {
 			return nil, err
 		}
-
 		return status, nil
+
 	case ResponsePowerOnAck:
 		return &PowerOnAck{}, nil
+
 	case ResponsePowerOffAck:
 		return &PowerOffAck{}, nil
+
 	case ResponseTemperatureAck:
 		return &SetTempAck{}, nil
+
 	}
 
 	return nil, fmt.Errorf("unknown command ID: %d", command.CommandID)

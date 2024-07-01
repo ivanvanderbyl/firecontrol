@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	readBufferSize = 1024
+	readBufferSize = 128
 	timeout        = 3 * time.Second
 )
 

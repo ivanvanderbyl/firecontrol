@@ -68,8 +68,8 @@ func TestParseStatusResponse(t *testing.T) {
 		HasTimers:          false,
 		FlameEffectIsOn:    false,
 		FanBoostIsOn:       false,
-		DesiredTempertaure: 27,
-		RoomTemperature:    24,
+		TargetTempertaure:  27,
+		CurrentTemperature: 24,
 	}, status)
 }
 

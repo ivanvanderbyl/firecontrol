@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/ivanvanderbyl/escea-fireplace/pkg/firecontrol"
+	"github.com/ivanvanderbyl/escea-fireplace/pkg/homekit"
 	"github.com/urfave/cli/v2"
 )
 
@@ -59,7 +60,7 @@ func main() {
 						formatBoolean(fp.Status.IsOn),
 						formatBoolean(fp.Status.FlameEffectIsOn),
 						formatBoolean(fp.Status.FanBoostIsOn),
-						fp.Status.DesiredTempertaure, fp.Status.RoomTemperature,
+						fp.Status.TargetTempertaure, fp.Status.CurrentTemperature,
 					)
 					return nil
 				},
@@ -133,6 +134,25 @@ func main() {
 
 					slog.Info("Temperature set", "IP", c.String("ip"), "Temperature", c.Int("temp"))
 					return nil
+				},
+			},
+			{
+				Name:        "start-homekit-accessory",
+				Action:      homekit.AccessoryAction,
+				Description: `Starts a HomeKit accessory server for each fireplaaace found on the network.`,
+				Flags: []cli.Flag{
+					&cli.IntFlag{
+						Name:     "pin",
+						Usage:    "Fireplace PIN, found on inside of remote control",
+						Category: "Escea Fireplace Settings",
+						Required: true,
+					},
+					&cli.IntFlag{
+						Name:     "serial",
+						Usage:    "Fireplace Serial Number, found on inside of remote control",
+						Category: "Escea Fireplace Settings",
+						Required: true,
+					},
 				},
 			},
 		},
