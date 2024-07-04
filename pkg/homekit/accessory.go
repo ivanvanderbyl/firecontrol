@@ -24,18 +24,75 @@ import (
 
 type (
 	FireplaceController struct {
-		fireplace *firecontrol.Fireplace
-		accessory *accessory.Thermostat
+		fireplace           *firecontrol.Fireplace
+		accessory           *accessory.Thermostat
+		debugLoggingEnabled bool
+		queue               chan Envelope
+	}
+
+	Instruction interface {
+		// Execute(ctx context.Context, fireplace *firecontrol.Fireplace) error
+		isInstruction()
+	}
+
+	internalInstruction struct {
+		responseChan chan error
+	}
+
+	SetTemperatureInstruction struct {
+		*internalInstruction
+		Temperature int
+	}
+
+	SetPowerInstruction struct {
+		*internalInstruction
+		Power bool
+	}
+
+	Envelope struct {
+		Instruction  Instruction
+		responseChan chan error
 	}
 )
+
+func (i SetTemperatureInstruction) isInstruction() {}
+func (i SetPowerInstruction) isInstruction()       {}
+
+func NewMessageEnvelope(instruction Instruction) Envelope {
+	return Envelope{Instruction: instruction, responseChan: make(chan error, 1)}
+}
+func (i Envelope) Complete(err error) {
+	if i.responseChan == nil {
+		return
+	}
+	i.responseChan <- err
+}
+
+func NewTemperatureInstruction(temp int) Instruction {
+	return SetTemperatureInstruction{
+		internalInstruction: &internalInstruction{responseChan: make(chan error, 1)},
+		Temperature:         temp,
+	}
+}
+
+func NewPowerInstruction(power bool) Instruction {
+	return SetPowerInstruction{
+		internalInstruction: &internalInstruction{responseChan: make(chan error, 1)},
+		Power:               power,
+	}
+}
 
 const refreshInterval = 30 * time.Second
 
 func AccessoryAction(c *cli.Context) error {
 	ctx := c.Context
 
-	h := slogctx.NewHandler(slog.NewTextHandler(os.Stdout, nil), nil)
+	h := slogctx.NewHandler(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}), nil)
+
 	slog.SetDefault(slog.New(h))
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+
+	slog.Debug("Starting HomeKit accessory with debug logging enabled", "debug", c.Bool("debug"))
 
 	slog.Info("Starting HomeKit accessory")
 	fireplaces, err := firecontrol.SearchForFireplaces()
@@ -75,7 +132,9 @@ func AccessoryAction(c *cli.Context) error {
 		slog.InfoContext(ctx, "Starting Controller")
 
 		controller := &FireplaceController{
-			fireplace: fireplace,
+			fireplace:           fireplace,
+			debugLoggingEnabled: c.Bool("debug"),
+			queue:               make(chan Envelope, 10),
 		}
 
 		// Start the controller in a new goroutine
@@ -83,11 +142,6 @@ func AccessoryAction(c *cli.Context) error {
 	}
 
 	return p.Wait()
-}
-
-type Instruction struct {
-	Command firecontrol.CommandCode
-	Value   any
 }
 
 func (fc *FireplaceController) Start(ctx context.Context) error {
@@ -123,8 +177,25 @@ func (fc *FireplaceController) Start(ctx context.Context) error {
 					"status", fireplaceStatusString(fc.fireplace.Status),
 				)
 			case <-ctx.Done():
+				close(fc.queue)
 				slog.InfoContext(ctx, "Stopping fireplace controller")
 				return
+
+			case msg := <-fc.queue:
+				slog.Debug("Received instruction", "instruction", msg.Instruction)
+				switch i := msg.Instruction.(type) {
+				case SetTemperatureInstruction:
+					msg.Complete(fc.setTargetTemperature(ctx, float64(i.Temperature)))
+				case SetPowerInstruction:
+					if i.Power {
+						msg.Complete(fc.fireplace.PowerOn())
+					} else {
+						msg.Complete(fc.fireplace.PowerOff())
+					}
+				}
+			default:
+				// To avoid busy waiting
+				time.Sleep(500 * time.Millisecond)
 			}
 		}
 	}()
@@ -150,36 +221,42 @@ func (fc *FireplaceController) createAccessory(ctx context.Context) error {
 	// target := characteristic.NewTargetTemperature()
 	acc.Thermostat.TargetTemperature.SetStepValue(1)
 	acc.Thermostat.TargetTemperature.SetMaxValue(30)
-
-	// TODO: For some reason enabling this causes the 'Home' app to stop responding to this accessory
-	// acc.Thermostat.TargetTemperature.SetMaxValue(16)
+	// acc.Thermostat.TargetTemperature.SetMinValue(16)
 	// acc.Thermostat.TargetTemperature.SetValue(22)
 
 	acc.Thermostat.TargetTemperature.OnSetRemoteValue(func(v float64) error {
 		slog.InfoContext(ctx, "Target Temperature Set", "value", v)
-		err := fc.setTargetTemperature(ctx, v)
+
+		msg := NewMessageEnvelope(NewTemperatureInstruction(int(v)))
+		fc.queue <- msg
+
+		err := <-msg.responseChan
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed to set target temperature", "error", err, "temperature", v)
 			return errors.Wrap(err, "setting target temperature")
 		}
+		slog.InfoContext(ctx, "Successfully set target temperature", "temperature", v)
 		return nil
 	})
 
 	acc.Thermostat.TargetHeatingCoolingState.ValidVals = []int{characteristic.TargetHeatingCoolingStateHeat, characteristic.TargetHeatingCoolingStateOff}
-	acc.Thermostat.TargetHeatingCoolingState.OnSetRemoteValue(func(v int) error {
-		switch v {
+	acc.Thermostat.TargetHeatingCoolingState.OnSetRemoteValue(func(targetState int) error {
+		switch targetState {
 		case characteristic.TargetHeatingCoolingStateAuto:
 			slog.InfoContext(ctx, "TargetHeatingCoolingState: Auto")
 		case characteristic.TargetHeatingCoolingStateHeat:
 			slog.InfoContext(ctx, "TargetHeatingCoolingState: Heat")
 
-			// Turn on the fireplace
-			err := fc.fireplace.PowerOn()
-			if err != nil {
-				return errors.Wrap(err, "turning on fireplace")
-			}
+			msg := NewMessageEnvelope(NewPowerInstruction(true))
+			fc.queue <- msg
 
-			time.Sleep(1 * time.Second)
+			err := <-msg.responseChan
+			if err != nil {
+				slog.ErrorContext(ctx, "Failed to set power state to on", "error", err, "temperature", targetState)
+				return errors.Wrap(err, "set power state")
+			}
+			slog.InfoContext(ctx, "Successfully set power state to on", "temperature", targetState)
+			return nil
 		case characteristic.TargetHeatingCoolingStateOff:
 			slog.InfoContext(ctx, "TargetHeatingCoolingState: Off")
 
