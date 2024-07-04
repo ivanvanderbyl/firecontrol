@@ -1,0 +1,11 @@
+[Unit]
+Description=FireControl
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/firecontrol start-homekit-accessory --serial 107757 --pin 1790
+Restart=always
+WorkingDirectory=/home/ivanvanderbyl/.firecontrol
+
+[Install]
+WantedBy=default.target

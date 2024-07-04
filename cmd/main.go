@@ -24,6 +24,12 @@ func main() {
 	app := &cli.App{
 		Name:  "firecontrol",
 		Usage: "Remote control for Escea fireplaces",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "debug",
+				Usage: "Enable debug logging, useful for troubleshooting HomeKit accessory issues",
+			},
+		},
 		Commands: []*cli.Command{
 			{
 				Name:  "search",
